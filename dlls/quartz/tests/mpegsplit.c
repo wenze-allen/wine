@@ -591,10 +591,10 @@ static void test_media_types(void)
 
     mt.subtype = MEDIASUBTYPE_MPEG1Video;
     hr = IPin_QueryAccept(pin, &mt);
-    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
     mt.subtype = MEDIASUBTYPE_MPEG1VideoCD;
     hr = IPin_QueryAccept(pin, &mt);
-    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
     mt.subtype = MEDIASUBTYPE_MPEG1System;
     hr = IPin_QueryAccept(pin, &mt);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);

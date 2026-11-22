@@ -2576,11 +2576,10 @@ static HRESULT mpeg_splitter_sink_query_accept(struct strmbase_pin *iface, const
     if (!IsEqualGUID(&mt->majortype, &MEDIATYPE_Stream))
         return S_FALSE;
     if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_MPEG1Audio)
+            || IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_MPEG1Video)
+            || IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_MPEG1VideoCD)
             || IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_MPEG1System))
         return S_OK;
-    if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_MPEG1Video)
-            || IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_MPEG1VideoCD))
-        FIXME("Unsupported subtype %s.\n", wine_dbgstr_guid(&mt->subtype));
     return S_FALSE;
 }
 
