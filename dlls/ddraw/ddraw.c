@@ -1812,6 +1812,13 @@ static HRESULT WINAPI ddraw7_GetFourCCCodes(IDirectDraw7 *iface, DWORD *NumCodes
 
     for (i = 0; i < ARRAY_SIZE(formats); ++i)
     {
+        /* Without 3D support a FOURCC surface is drawn by the CPU blitter,
+         * which converts only YUY2 to RGB. The planar formats do not even get
+         * their chroma planes there: their 3/2 height comes from the GL format
+         * setup. The VMR-7 takes whatever FOURCC is listed, so list only what
+         * can be drawn. */
+        if ((ddraw->flags & DDRAW_NO3D) && formats[i] != WINED3DFMT_YUY2)
+            continue;
         if (SUCCEEDED(wined3d_check_device_format(ddraw->wined3d, ddraw->wined3d_adapter, WINED3D_DEVICE_TYPE_HAL,
                 mode.format_id, 0, 0, WINED3D_RTYPE_TEXTURE_2D, formats[i])))
         {
