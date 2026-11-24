@@ -4005,6 +4005,240 @@ static void test_default_presenter_window(void)
     ok(!ref, "Got outstanding refcount %ld.\n", ref);
 }
 
+static void test_top_down_rgb(void)
+{
+    ALLOCATOR_PROPERTIES req_props = {1, 600 * 400 * 4, 1, 0}, ret_props;
+    VIDEOINFOHEADER vih =
+    {
+        .bmiHeader.biSize = sizeof(BITMAPINFOHEADER),
+        .bmiHeader.biBitCount = 32,
+        .bmiHeader.biWidth = 600,
+        .bmiHeader.biHeight = -400,
+        .bmiHeader.biPlanes = 1,
+        .bmiHeader.biCompression = BI_RGB,
+    };
+    AM_MEDIA_TYPE req_mt =
+    {
+        .majortype = MEDIATYPE_Video,
+        .subtype = MEDIASUBTYPE_RGB32,
+        .formattype = FORMAT_VideoInfo,
+        .cbFormat = sizeof(vih),
+        .pbFormat = (BYTE *)&vih,
+    };
+    LONG width, height, aspect_width, aspect_height;
+    IVMRWindowlessControl *windowless_control;
+    IVMRSurfaceAllocator *surface_allocator;
+    IDirectDrawSurface7 *frontbuffer;
+    IBaseFilter *filter;
+    IFilterGraph2 *graph;
+    struct testfilter source;
+    IMemAllocator *allocator;
+    VMRALLOCATIONINFO info;
+    IMediaControl *control;
+    OAFilterState state;
+    DDSURFACEDESC2 desc;
+    IMemInputPin *input;
+    RECT src, expect;
+    HANDLE thread;
+    DWORD count;
+    HWND window;
+    HRESULT hr;
+    ULONG ref;
+    IPin *pin;
+
+    filter = create_vmr7(VMRMode_Windowed);
+    graph = create_graph();
+
+    IBaseFilter_FindPin(filter, L"VMR Input0", &pin);
+    IPin_QueryInterface(pin, &IID_IMemInputPin, (void **)&input);
+    IFilterGraph2_QueryInterface(graph, &IID_IMediaControl, (void **)&control);
+
+    testfilter_init(&source);
+    IFilterGraph2_AddFilter(graph, &source.filter.IBaseFilter_iface, L"source");
+    IFilterGraph2_AddFilter(graph, filter, L"vmr7");
+
+    hr = IFilterGraph2_ConnectDirect(graph, &source.source.pin.IPin_iface, pin, &req_mt);
+    if (hr == E_FAIL || hr == VFW_E_TYPE_NOT_ACCEPTED)
+    {
+        skip("Got %#lx when connecting top-down RGB32.\n", hr);
+        goto out_windowed;
+    }
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    {
+        IBasicVideo *video;
+
+        IBaseFilter_QueryInterface(filter, &IID_IBasicVideo, (void **)&video);
+
+        width = height = 0xdeadbeef;
+        hr = IBasicVideo_GetVideoSize(video, &width, &height);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        ok(width == 600, "Got width %ld.\n", width);
+        ok(height == 400, "Got height %ld.\n", height);
+
+        width = height = 0xdeadbeef;
+        hr = IBasicVideo_get_VideoWidth(video, &width);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        ok(width == 600, "Got width %ld.\n", width);
+        hr = IBasicVideo_get_VideoHeight(video, &height);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        ok(height == 400, "Got height %ld.\n", height);
+
+        test_basic_video_source(video);
+        check_destination_position(video, 0, 0, 600, 400);
+
+        IBasicVideo_Release(video);
+    }
+
+    hr = IMemInputPin_GetAllocator(input, &allocator);
+    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (hr != S_OK)
+    {
+        hr = CoCreateInstance(&CLSID_MemoryAllocator, NULL, CLSCTX_INPROC_SERVER,
+                &IID_IMemAllocator, (void **)&allocator);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IMemInputPin_NotifyAllocator(input, allocator, TRUE);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+    hr = IMemAllocator_SetProperties(allocator, &req_props, &ret_props);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IMemAllocator_Commit(allocator);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    IMemAllocator_Release(allocator);
+
+    hr = IMediaControl_Pause(control);
+    ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
+
+    thread = send_frame(input);
+    hr = IMediaControl_GetState(control, 1000, &state);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IMediaControl_Run(control);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = join_thread(thread);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = join_thread(send_frame(input));
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IMediaControl_Stop(control);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+out_windowed:
+    IMediaControl_Release(control);
+    ref = IFilterGraph2_Release(graph);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+    IMemInputPin_Release(input);
+    IPin_Release(pin);
+    ref = IBaseFilter_Release(filter);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+    ref = IBaseFilter_Release(&source.filter.IBaseFilter_iface);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+
+    /* Windowless native size and default source rect for biHeight < 0. */
+    vih.bmiHeader.biWidth = 32;
+    vih.bmiHeader.biHeight = -16;
+    req_props.cbBuffer = 32 * 16 * 4;
+
+    filter = create_vmr7(VMRMode_Windowless);
+    graph = create_graph();
+    IBaseFilter_QueryInterface(filter, &IID_IVMRWindowlessControl, (void **)&windowless_control);
+    IBaseFilter_FindPin(filter, L"VMR Input0", &pin);
+    IPin_QueryInterface(pin, &IID_IMemInputPin, (void **)&input);
+    testfilter_init(&source);
+    IFilterGraph2_AddFilter(graph, &source.filter.IBaseFilter_iface, L"source");
+    IFilterGraph2_AddFilter(graph, filter, L"vmr7");
+    window = CreateWindowA("static", "quartz_test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, 0, 0, 0, 0);
+    ok(!!window, "Failed to create a window.\n");
+
+    hr = IVMRWindowlessControl_SetVideoClippingWindow(windowless_control, window);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IFilterGraph2_ConnectDirect(graph, &source.source.pin.IPin_iface, pin, &req_mt);
+    if (hr == E_FAIL || hr == VFW_E_TYPE_NOT_ACCEPTED)
+    {
+        skip("Got %#lx when connecting windowless top-down RGB32.\n", hr);
+        goto out_windowless;
+    }
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IMemInputPin_GetAllocator(input, &allocator);
+    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (hr == S_OK)
+    {
+        hr = IMemAllocator_SetProperties(allocator, &req_props, &ret_props);
+        IMemAllocator_Release(allocator);
+        if (hr == E_FAIL)
+        {
+            skip("Got E_FAIL when setting allocator properties.\n");
+            goto out_windowless;
+        }
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+
+    width = height = aspect_width = aspect_height = 0xdeadbeef;
+    hr = IVMRWindowlessControl_GetNativeVideoSize(windowless_control,
+            &width, &height, &aspect_width, &aspect_height);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(width == 32, "Got width %ld.\n", width);
+    ok(height == 16, "Got height %ld.\n", height);
+    ok(aspect_width == 32, "Got aspect width %ld.\n", aspect_width);
+    ok(aspect_height == 16, "Got aspect height %ld.\n", aspect_height);
+
+    memset(&src, 0xcc, sizeof(src));
+    hr = IVMRWindowlessControl_GetVideoPosition(windowless_control, &src, NULL);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    SetRect(&expect, 0, 0, 32, 16);
+    ok(EqualRect(&src, &expect), "Got source rect %s.\n", wine_dbgstr_rect(&src));
+
+out_windowless:
+    ref = IFilterGraph2_Release(graph);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+    IMemInputPin_Release(input);
+    IPin_Release(pin);
+    IVMRWindowlessControl_Release(windowless_control);
+    ref = IBaseFilter_Release(filter);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+    ref = IBaseFilter_Release(&source.filter.IBaseFilter_iface);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+    DestroyWindow(window);
+
+    /* Default presenter surface height for biHeight < 0. */
+    hr = CoCreateInstance(&CLSID_AllocPresenter, NULL, CLSCTX_INPROC_SERVER,
+            &IID_IVMRSurfaceAllocator, (void **)&surface_allocator);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    count = 1;
+    memset(&info, 0, sizeof(info));
+    info.dwFlags = AMAP_DIRECTED_FLIP | AMAP_ALLOW_SYSMEM;
+    info.dwMinBuffers = count;
+    info.dwMaxBuffers = count;
+    info.szNativeSize.cx = info.szAspectRatio.cx = 32;
+    info.szNativeSize.cy = info.szAspectRatio.cy = 16;
+    info.lpHdr = &vih.bmiHeader;
+
+    hr = IVMRSurfaceAllocator_AllocateSurface(surface_allocator, 0, &info, &count, &frontbuffer);
+    if (SUCCEEDED(hr))
+    {
+        memset(&desc, 0, sizeof(desc));
+        desc.dwSize = sizeof(desc);
+        hr = IDirectDrawSurface7_GetSurfaceDesc(frontbuffer, &desc);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        ok(desc.dwWidth == 32, "Got width %lu.\n", desc.dwWidth);
+        ok(desc.dwHeight == 16, "Got height %lu.\n", desc.dwHeight);
+
+        hr = IVMRSurfaceAllocator_FreeSurface(surface_allocator, 0);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    }
+    else
+    {
+        skip("AllocateSurface failed for 32-bit BI_RGB, hr %#lx.\n", hr);
+    }
+
+    ref = IVMRSurfaceAllocator_Release(surface_allocator);
+    ok(!ref, "Got outstanding refcount %ld.\n", ref);
+}
+
 START_TEST(vmr7)
 {
     CoInitialize(NULL);
@@ -4023,6 +4257,7 @@ START_TEST(vmr7)
     test_video_window();
     test_basic_video();
     test_windowless_size();
+    test_top_down_rgb();
     test_unconnected_eos();
     test_default_presenter_allocate();
     test_default_presenter_window();

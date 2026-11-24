@@ -219,7 +219,7 @@ static HRESULT vmr_render(struct strmbase_renderer *iface, IMediaSample *sample)
     info.rtStart = start_time;
     info.rtEnd = end_time;
     info.szAspectRatio.cx = width;
-    info.szAspectRatio.cy = height;
+    info.szAspectRatio.cy = abs(height);
     info.lpSurf = filter->surfaces[(--filter->surface_index) % filter->surface_count];
 
     hr = IVMRSurfaceAllocator_PrepareSurface(filter->allocator, filter->cookie, info.lpSurf, 0);
@@ -236,7 +236,7 @@ static HRESULT vmr_render(struct strmbase_renderer *iface, IMediaSample *sample)
 
     if (width > surface_desc.dwWidth || abs(height)  > surface_desc.dwHeight)
     {
-        FIXME("src surface (%ux%u) larger than rendering surface (%lux%lu).\n", width, height,
+        FIXME("src surface (%ux%u) larger than rendering surface (%lux%lu).\n", width, abs(height),
                 surface_desc.dwWidth, surface_desc.dwHeight);
     }
 
@@ -409,7 +409,7 @@ static HRESULT allocate_surfaces(struct vmr7 *filter, const AM_MEDIA_TYPE *mt)
     info.lpHdr = &bitmap_header;
     info.dwMinBuffers = info.dwMaxBuffers = count;
     info.szAspectRatio.cx = info.szNativeSize.cx = bitmap_header.biWidth;
-    info.szAspectRatio.cy = info.szNativeSize.cy = bitmap_header.biHeight;
+    info.szAspectRatio.cy = info.szNativeSize.cy = abs(bitmap_header.biHeight);
 
     if (FAILED(hr = initialize_device(filter, &info, count)))
         free(filter->surfaces);
@@ -447,7 +447,7 @@ static HRESULT vmr_connect(struct strmbase_renderer *iface, const AM_MEDIA_TYPE 
     HRESULT hr;
     RECT rect;
 
-    SetRect(&rect, 0, 0, bitmap_header->biWidth, bitmap_header->biHeight);
+    SetRect(&rect, 0, 0, bitmap_header->biWidth, abs(bitmap_header->biHeight));
     filter->window.src = rect;
 
     AdjustWindowRectEx(&rect, GetWindowLongW(window, GWL_STYLE), FALSE,
@@ -565,7 +565,7 @@ static void vmr_get_default_rect(struct video_window *iface, RECT *rect)
     struct vmr7 *filter = impl_from_video_window(iface);
     const BITMAPINFOHEADER *bitmap_header = get_filter_bitmap_header(filter);
 
-    SetRect(rect, 0, 0, bitmap_header->biWidth, bitmap_header->biHeight);
+    SetRect(rect, 0, 0, bitmap_header->biWidth, abs(bitmap_header->biHeight));
 }
 
 static HRESULT vmr_get_current_image(struct video_window *iface, LONG *size, LONG *image)
@@ -1086,11 +1086,11 @@ static HRESULT WINAPI windowless_control_GetNativeVideoSize(IVMRWindowlessContro
         return E_POINTER;
 
     *width = bitmap_header->biWidth;
-    *height = bitmap_header->biHeight;
+    *height = abs(bitmap_header->biHeight);
     if (aspect_width)
         *aspect_width = bitmap_header->biWidth;
     if (aspect_height)
-        *aspect_height = bitmap_header->biHeight;
+        *aspect_height = abs(bitmap_header->biHeight);
 
     return S_OK;
 }

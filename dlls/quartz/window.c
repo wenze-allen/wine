@@ -927,7 +927,7 @@ static HRESULT WINAPI basic_video_put_SourceTop(IBasicVideo *iface, LONG top)
 
     TRACE("window %p, top %ld.\n", window, top);
 
-    if (top < 0 || window->src.bottom + top - window->src.top > get_bitmap_header(window)->biHeight)
+    if (top < 0 || window->src.bottom + top - window->src.top > abs(get_bitmap_header(window)->biHeight))
         return E_INVALIDARG;
 
     OffsetRect(&window->src, 0, top - window->src.top);
@@ -953,7 +953,7 @@ static HRESULT WINAPI basic_video_put_SourceHeight(IBasicVideo *iface, LONG heig
 
     TRACE("window %p, height %ld.\n", window, height);
 
-    if (height <= 0 || window->src.top + height > get_bitmap_header(window)->biHeight)
+    if (height <= 0 || window->src.top + height > abs(get_bitmap_header(window)->biHeight))
         return E_INVALIDARG;
 
     window->src.bottom = window->src.top + height;
@@ -1085,7 +1085,7 @@ static HRESULT WINAPI basic_video_SetSourcePosition(IBasicVideo *iface,
 
     if (left < 0 || left + width > bitmap_header->biWidth || width <= 0)
         return E_INVALIDARG;
-    if (top < 0 || top + height > bitmap_header->biHeight || height <= 0)
+    if (top < 0 || top + height > abs(bitmap_header->biHeight) || height <= 0)
         return E_INVALIDARG;
 
     SetRect(&window->src, left, top, left + width, top + height);
@@ -1116,7 +1116,7 @@ static HRESULT WINAPI basic_video_SetDefaultSourcePosition(IBasicVideo *iface)
 
     TRACE("window %p.\n", window);
 
-    SetRect(&window->src, 0, 0, bitmap_header->biWidth, bitmap_header->biHeight);
+    SetRect(&window->src, 0, 0, bitmap_header->biWidth, abs(bitmap_header->biHeight));
     return S_OK;
 }
 
@@ -1177,7 +1177,7 @@ static HRESULT WINAPI basic_video_GetVideoSize(IBasicVideo *iface, LONG *width, 
 
     bitmap_header = get_bitmap_header(window);
     *width = bitmap_header->biWidth;
-    *height = bitmap_header->biHeight;
+    *height = abs(bitmap_header->biHeight);
     return S_OK;
 }
 
@@ -1217,7 +1217,7 @@ static HRESULT WINAPI basic_video_IsUsingDefaultSource(IBasicVideo *iface)
 
     if (!window->src.left && !window->src.top
             && window->src.right == bitmap_header->biWidth
-            && window->src.bottom == bitmap_header->biHeight)
+            && window->src.bottom == abs(bitmap_header->biHeight))
         return S_OK;
     return S_FALSE;
 }

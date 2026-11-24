@@ -190,7 +190,7 @@ static HRESULT WINAPI surface_allocator_AllocateSurface(IVMRSurfaceAllocator *if
 
     surface_desc.dwFlags = DDSD_WIDTH | DDSD_HEIGHT | DDSD_PIXELFORMAT | DDSD_CAPS | DDSD_BACKBUFFERCOUNT;
     surface_desc.dwWidth = info->lpHdr->biWidth;
-    surface_desc.dwHeight = info->lpHdr->biHeight;
+    surface_desc.dwHeight = abs(info->lpHdr->biHeight);
     surface_desc.ddpfPixelFormat.dwSize = sizeof(surface_desc.ddpfPixelFormat);
     surface_desc.ddsCaps.dwCaps = DDSCAPS_FLIP | DDSCAPS_COMPLEX | DDSCAPS_OFFSCREENPLAIN;
     surface_desc.dwBackBufferCount = *count;
