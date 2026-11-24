@@ -413,11 +413,31 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
     return S_OK;
 }
 
+static HRESULT transform_sink_end_flush(struct strmbase_sink *pin)
+{
+    struct transform *filter = impl_from_strmbase_filter(pin->pin.filter);
+
+    /* What the transform still holds belongs to the position before the flush:
+     * after a seek, a video decoder would deliver its last delayed picture first. */
+    EnterCriticalSection(&filter->filter.stream_cs);
+    if (filter->filter.state != State_Stopped && filter->source.pin.peer)
+    {
+        wg_transform_flush(filter->transform);
+        wg_sample_queue_flush(filter->sample_queue, false);
+    }
+    LeaveCriticalSection(&filter->filter.stream_cs);
+
+    if (filter->source.pin.peer)
+        return IPin_EndFlush(filter->source.pin.peer);
+    return S_OK;
+}
+
 static const struct strmbase_sink_ops sink_ops =
 {
     .base.pin_query_accept = transform_sink_query_accept,
     .base.pin_query_interface = transform_sink_query_interface,
     .pfnReceive = transform_sink_receive,
+    .sink_end_flush = transform_sink_end_flush,
 };
 
 static HRESULT transform_source_query_accept(struct strmbase_pin *pin, const AM_MEDIA_TYPE *mt)
