@@ -119,6 +119,8 @@ static HRESULT object_context_create(DWORD flags, IMFByteStream *stream, const W
     return S_OK;
 }
 
+#define SOURCE_BUFFER_POOL_SIZE 4
+
 struct media_stream
 {
     IMFMediaStream IMFMediaStream_iface;
@@ -133,6 +135,20 @@ struct media_stream
     IUnknown **token_queue;
     LONG token_queue_count;
     LONG token_queue_cap;
+
+    struct
+    {
+        IMFMediaBuffer *buffer;
+        DWORD max_length;
+    } buffer_pool[SOURCE_BUFFER_POOL_SIZE];
+    unsigned int pool_count;
+    unsigned int pool_max_in_use;
+    DWORD pool_buffer_size;
+    UINT64 pool_reuses;
+    UINT64 pool_fresh_allocs;
+    UINT64 pool_alloc_failures;
+    BOOL pool_has_pooled;
+    BOOL pool_logged;
 
     DWORD stream_id;
     BOOL active;
@@ -712,6 +728,132 @@ static HRESULT media_source_stop(struct media_source *source)
     return IMFMediaEventQueue_QueueEventParamVar(source->event_queue, MESourceStopped, &GUID_NULL, S_OK, NULL);
 }
 
+static INIT_ONCE source_pool_once = INIT_ONCE_STATIC_INIT;
+static BOOL source_pool_disabled;
+
+static BOOL WINAPI init_source_pool(INIT_ONCE *once, void *param, void **context)
+{
+    WCHAR val[16];
+    /* 0 restores per-sample MFCreateMemoryBuffer allocations; on by default. */
+    DWORD len = GetEnvironmentVariableW(L"MADEIRA_MF_SOURCE_POOL", val, ARRAY_SIZE(val));
+
+    source_pool_disabled = (len && !wcscmp(val, L"0"));
+    return TRUE;
+}
+
+static BOOL media_source_pool_enabled(void)
+{
+    InitOnceExecuteOnce(&source_pool_once, init_source_pool, NULL, NULL);
+    return !source_pool_disabled;
+}
+
+/* Reuse a pooled 1D memory buffer only when the pool holds its sole reference.
+ * mfplat's memory_1d_buffer exposes only IUnknown/IMFMediaBuffer backed by a
+ * single Interlocked refcount, so AddRef returning 2 proves refcount was 1
+ * (no sample or caller downstream holds the buffer any longer). */
+static HRESULT media_stream_acquire_buffer(struct media_stream *stream, DWORD size, IMFMediaBuffer **out)
+{
+    unsigned int i, busy = 0;
+    int reuse_idx = -1, replace_idx = -1;
+    IMFMediaBuffer *buffer;
+    HRESULT hr;
+
+    if (!media_source_pool_enabled())
+        return MFCreateMemoryBuffer(size, out);
+
+    for (i = 0; i < stream->pool_count; ++i)
+    {
+        ULONG ref = IMFMediaBuffer_AddRef(stream->buffer_pool[i].buffer);
+        if (ref == 2)
+        {
+            if (reuse_idx < 0 && stream->buffer_pool[i].max_length >= size)
+            {
+                reuse_idx = (int)i;
+                continue;
+            }
+            if (replace_idx < 0 && stream->buffer_pool[i].max_length < size)
+                replace_idx = (int)i;
+            IMFMediaBuffer_Release(stream->buffer_pool[i].buffer);
+        }
+        else
+        {
+            IMFMediaBuffer_Release(stream->buffer_pool[i].buffer);
+            busy++;
+        }
+    }
+
+    if (reuse_idx >= 0)
+    {
+        stream->pool_reuses++;
+        if (busy + 1 > stream->pool_max_in_use)
+            stream->pool_max_in_use = busy + 1;
+        *out = stream->buffer_pool[reuse_idx].buffer;
+        return S_OK;
+    }
+
+    if (replace_idx >= 0)
+    {
+        IMFMediaBuffer_Release(stream->buffer_pool[replace_idx].buffer);
+        stream->pool_count--;
+        if ((unsigned int)replace_idx < stream->pool_count)
+            stream->buffer_pool[replace_idx] = stream->buffer_pool[stream->pool_count];
+        stream->buffer_pool[stream->pool_count].buffer = NULL;
+        stream->buffer_pool[stream->pool_count].max_length = 0;
+    }
+
+    if (stream->pool_count < SOURCE_BUFFER_POOL_SIZE)
+    {
+        if (FAILED(hr = MFCreateMemoryBuffer(size, &buffer)))
+        {
+            stream->pool_alloc_failures++;
+            return hr;
+        }
+        IMFMediaBuffer_AddRef(buffer);
+        stream->buffer_pool[stream->pool_count].buffer = buffer;
+        stream->buffer_pool[stream->pool_count].max_length = size;
+        stream->pool_count++;
+        stream->pool_has_pooled = TRUE;
+        if (size > stream->pool_buffer_size)
+            stream->pool_buffer_size = size;
+        if (busy + 1 > stream->pool_max_in_use)
+            stream->pool_max_in_use = busy + 1;
+        *out = buffer;
+        return S_OK;
+    }
+
+    if (FAILED(hr = MFCreateMemoryBuffer(size, &buffer)))
+    {
+        stream->pool_alloc_failures++;
+        return hr;
+    }
+    stream->pool_fresh_allocs++;
+    *out = buffer;
+    return S_OK;
+}
+
+static void media_stream_free_pool(struct media_stream *stream)
+{
+    unsigned int i;
+
+    if (stream->pool_has_pooled && !stream->pool_logged)
+    {
+        stream->pool_logged = TRUE;
+        MESSAGE("[mf-source] stream %lu: %u buffers of %lu bytes, %I64u reuses, "
+                "%I64u fresh allocations, %I64u failed, at most %u in use\n",
+                stream->stream_id, stream->pool_count, stream->pool_buffer_size,
+                stream->pool_reuses, stream->pool_fresh_allocs,
+                stream->pool_alloc_failures, stream->pool_max_in_use);
+    }
+
+    for (i = 0; i < stream->pool_count; ++i)
+    {
+        IMFMediaBuffer_Release(stream->buffer_pool[i].buffer);
+        stream->buffer_pool[i].buffer = NULL;
+        stream->buffer_pool[i].max_length = 0;
+    }
+    stream->pool_count = 0;
+}
+
 static HRESULT media_stream_send_sample(struct media_stream *stream, const struct wg_parser_buffer *wg_buffer, IUnknown *token)
 {
     IMFSample *sample = NULL;
@@ -719,7 +861,7 @@ static HRESULT media_stream_send_sample(struct media_stream *stream, const struc
     HRESULT hr;
     BYTE *data;
 
-    if (FAILED(hr = MFCreateMemoryBuffer(wg_buffer->size, &buffer)))
+    if (FAILED(hr = media_stream_acquire_buffer(stream, wg_buffer->size, &buffer)))
         return hr;
     if (FAILED(hr = IMFMediaBuffer_SetCurrentLength(buffer, wg_buffer->size)))
         goto out;
@@ -979,6 +1121,7 @@ static ULONG WINAPI media_stream_Release(IMFMediaStream *iface)
 
     if (!ref)
     {
+        media_stream_free_pool(stream);
         IMFMediaSource_Release(stream->media_source);
         IMFStreamDescriptor_Release(stream->descriptor);
         IMFMediaEventQueue_Release(stream->event_queue);
@@ -1144,6 +1287,7 @@ static HRESULT media_stream_create(IMFMediaSource *source, IMFStreamDescriptor *
     object->media_source = source;
     IMFStreamDescriptor_AddRef(descriptor);
     object->descriptor = descriptor;
+    IMFStreamDescriptor_GetStreamIdentifier(descriptor, &object->stream_id);
 
     object->active = TRUE;
     object->eos = FALSE;
@@ -1563,6 +1707,7 @@ static HRESULT WINAPI media_source_Pause(IMFMediaSource *iface)
 static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
 {
     struct media_source *source = impl_from_IMFMediaSource(iface);
+    ULONG i;
 
     TRACE("%p.\n", iface);
 
@@ -1585,6 +1730,9 @@ static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
     IMFMediaEventQueue_QueueEventParamVar(source->event_queue, MEError, &GUID_NULL, MF_E_SHUTDOWN, NULL);
     IMFMediaEventQueue_Shutdown(source->event_queue);
     IMFByteStream_Close(source->byte_stream);
+
+    for (i = 0; i < source->stream_count; ++i)
+        media_stream_free_pool(source->streams[i]);
 
     while (source->stream_count--)
     {

@@ -1601,6 +1601,84 @@ static void test_source_resolver(void)
     if (get_event((IMFMediaEventGenerator *)mediasource, MESourceSeeked, &var))
         ok(var.vt == VT_I8, "Unexpected value type.\n");
 
+    /* A buffer kept by the caller after releasing its sample must not be
+     * overwritten by a later sample, and releasing it allows later reads to
+     * continue cleanly. */
+    {
+        IMFMediaBuffer *buf0 = NULL, *buf1 = NULL, *buf2 = NULL;
+        BYTE *data0, *data1, *data2, *saved0 = NULL, *saved1 = NULL;
+        IMFSample *sample0, *sample1, *sample2;
+        DWORD len0 = 0, len1 = 0, len2 = 0, cur;
+
+        hr = IMFMediaStream_RequestSample(video_stream, NULL);
+        ok(hr == S_OK, "Failed to request sample 0, hr %#lx.\n", hr);
+        if (get_event((IMFMediaEventGenerator *)video_stream, MEMediaSample, &var))
+        {
+            sample0 = (IMFSample *)var.punkVal;
+            hr = IMFSample_GetBufferByIndex(sample0, 0, &buf0);
+            ok(hr == S_OK, "Failed to get buffer 0, hr %#lx.\n", hr);
+            hr = IMFMediaBuffer_Lock(buf0, &data0, NULL, &len0);
+            ok(hr == S_OK, "Failed to lock buffer 0, hr %#lx.\n", hr);
+            ok(len0 > 0, "Expected non-empty buffer 0.\n");
+            saved0 = malloc(len0);
+            memcpy(saved0, data0, len0);
+            IMFMediaBuffer_Unlock(buf0);
+            IMFSample_Release(sample0);
+        }
+
+        hr = IMFMediaStream_RequestSample(video_stream, NULL);
+        ok(hr == S_OK, "Failed to request sample 1, hr %#lx.\n", hr);
+        if (buf0 && get_event((IMFMediaEventGenerator *)video_stream, MEMediaSample, &var))
+        {
+            sample1 = (IMFSample *)var.punkVal;
+            hr = IMFSample_GetBufferByIndex(sample1, 0, &buf1);
+            ok(hr == S_OK, "Failed to get buffer 1, hr %#lx.\n", hr);
+            hr = IMFMediaBuffer_Lock(buf0, &data0, NULL, &cur);
+            ok(hr == S_OK, "Failed to re-lock buffer 0, hr %#lx.\n", hr);
+            hr = IMFMediaBuffer_Lock(buf1, &data1, NULL, &len1);
+            ok(hr == S_OK, "Failed to lock buffer 1, hr %#lx.\n", hr);
+            ok(buf1 != buf0, "Expected distinct buffer while buffer 0 is still referenced.\n");
+            ok(data1 != data0, "Expected distinct buffer memory while buffer 0 is still referenced.\n");
+            ok(cur == len0, "Held buffer 0 length changed from %lu to %lu.\n", len0, cur);
+            ok(!memcmp(data0, saved0, len0), "Held buffer 0 contents were overwritten.\n");
+            saved1 = malloc(len1);
+            memcpy(saved1, data1, len1);
+            IMFMediaBuffer_Unlock(buf1);
+            IMFMediaBuffer_Unlock(buf0);
+            IMFMediaBuffer_Release(buf0);
+            buf0 = NULL;
+
+            hr = IMFMediaStream_RequestSample(video_stream, NULL);
+            ok(hr == S_OK, "Failed to request sample 2, hr %#lx.\n", hr);
+            if (get_event((IMFMediaEventGenerator *)video_stream, MEMediaSample, &var))
+            {
+                sample2 = (IMFSample *)var.punkVal;
+                hr = IMFSample_GetBufferByIndex(sample2, 0, &buf2);
+                ok(hr == S_OK, "Failed to get buffer 2, hr %#lx.\n", hr);
+                hr = IMFMediaBuffer_Lock(buf1, &data1, NULL, &cur);
+                ok(hr == S_OK, "Failed to re-lock buffer 1, hr %#lx.\n", hr);
+                hr = IMFMediaBuffer_Lock(buf2, &data2, NULL, &len2);
+                ok(hr == S_OK, "Failed to lock buffer 2, hr %#lx.\n", hr);
+                ok(len2 > 0, "Expected non-empty buffer 2.\n");
+                ok(data2 != data1, "Expected distinct buffer memory while sample 1 is still referenced.\n");
+                ok(cur == len1, "Held buffer 1 length changed from %lu to %lu.\n", len1, cur);
+                ok(!memcmp(data1, saved1, len1), "Held sample 1 contents were overwritten.\n");
+                IMFMediaBuffer_Unlock(buf2);
+                IMFMediaBuffer_Unlock(buf1);
+                IMFMediaBuffer_Release(buf2);
+                IMFSample_Release(sample2);
+            }
+
+            IMFMediaBuffer_Release(buf1);
+            IMFSample_Release(sample1);
+        }
+
+        if (buf0)
+            IMFMediaBuffer_Release(buf0);
+        free(saved0);
+        free(saved1);
+    }
+
     hr = IMFMediaSource_Stop(mediasource);
     ok(hr == S_OK, "Failed to pause media source, hr %#lx.\n", hr);
     if (get_event((IMFMediaEventGenerator *)mediasource, MESourceStopped, &var))
