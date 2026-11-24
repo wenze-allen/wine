@@ -4134,6 +4134,49 @@ static void test_ec_complete(void)
     hr = IMediaEvent_GetEvent(eventsrc, &code, &param1, &param2, 50);
     ok(hr == E_ABORT, "Got hr %#lx.\n", hr);
 
+    /* The graph is still running and has completed. Running it again, as an
+     * application does to play a movie again after seeking back, starts a new
+     * wait for completion. */
+
+    code = 0xdeadbeef;
+    hr = IMediaEvent_WaitForCompletion(eventsrc, 0, &code);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(code == EC_COMPLETE, "Got code %#lx.\n", code);
+
+    hr = IMediaControl_Pause(control);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IMediaEvent_WaitForCompletion(eventsrc, 0, &code);
+    ok(hr == VFW_E_WRONG_STATE, "Got hr %#lx.\n", hr);
+
+    hr = IMediaControl_Run(control);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    code = 0xdeadbeef;
+    hr = IMediaEvent_WaitForCompletion(eventsrc, 0, &code);
+    ok(hr == E_ABORT, "Got hr %#lx.\n", hr);
+    ok(!code, "Got code %#lx.\n", code);
+
+    hr = IMediaEventSink_Notify(eventsink, EC_COMPLETE, S_OK, (LONG_PTR)&filter1.IBaseFilter_iface);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IMediaEvent_WaitForCompletion(eventsrc, 0, &code);
+    ok(hr == E_ABORT, "Got hr %#lx.\n", hr);
+    hr = IMediaEventSink_Notify(eventsink, EC_COMPLETE, S_OK, (LONG_PTR)&filter2.IBaseFilter_iface);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    code = 0xdeadbeef;
+    hr = IMediaEvent_WaitForCompletion(eventsrc, 0, &code);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(code == EC_COMPLETE, "Got code %#lx.\n", code);
+
+    IMediaControl_Stop(control);
+
+    /* So does running it again from stopped. */
+
+    hr = IMediaControl_Run(control);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IMediaEvent_WaitForCompletion(eventsrc, 0, &code);
+    ok(hr == E_ABORT, "Got hr %#lx.\n", hr);
+
+    while (IMediaEvent_GetEvent(eventsrc, &code, &param1, &param2, 0) == S_OK)
+        IMediaEvent_FreeEventParams(eventsrc, code, param1, param2);
     IMediaControl_Stop(control);
 
     /* Test CancelDefaultHandling(). */

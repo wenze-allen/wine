@@ -1778,6 +1778,9 @@ static HRESULT graph_start(struct filter_graph *graph, REFERENCE_TIME stream_sta
 
     EnterCriticalSection(&graph->event_cs);
     graph->EcCompleteCount = 0;
+    /* WaitForCompletion() waits for this run to complete, not an earlier one. */
+    graph->CompletionStatus = 0;
+    ResetEvent(graph->hEventCompletion);
     update_render_count(graph);
     LeaveCriticalSection(&graph->event_cs);
 
